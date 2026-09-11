@@ -459,6 +459,12 @@ func (a *application) server() (func() error, func() error) {
 		w.WriteHeader(http.StatusOK)
 	})
 
+	// Gloweet fork addition: server-side routes for the veille digest widget
+	// (cadence control + search + permalinks). See veille.go.
+	mux.HandleFunc("GET /veille/step/{n}", a.handleVeilleStep)
+	mux.HandleFunc("GET /veille/search", a.handleVeilleSearch)
+	mux.HandleFunc("GET /veille/digest/{date}", a.handleVeilleDigest)
+
 	if a.RequiresAuth {
 		mux.HandleFunc("GET /login", a.handleLoginPageRequest)
 		mux.HandleFunc("GET /logout", a.handleLogoutRequest)
