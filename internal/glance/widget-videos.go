@@ -125,6 +125,7 @@ type video struct {
 	ThumbnailUrl string
 	Title        string
 	Url          string
+	ID           string // Gloweet fork addition: for the "seen" toggle, see videos_seen.go
 	Author       string
 	AuthorUrl    string
 	TimePosted   time.Time
@@ -175,22 +176,22 @@ func (w *videosWidget) fetchYoutubeChannelUploads(channelOrPlaylistIDs []string,
 		for j := range response.Videos {
 			v := &response.Videos[j]
 
-			var videoUrl string
+			var videoUrl, videoId string
+			if parsedUrl, err := url.Parse(v.Link.Href); err == nil {
+				videoId = parsedUrl.Query().Get("v")
+			}
 			if videoUrlTemplate == "" {
 				videoUrl = v.Link.Href
+			} else if videoId != "" {
+				videoUrl = strings.ReplaceAll(videoUrlTemplate, "{VIDEO-ID}", videoId)
 			} else {
-				parsedUrl, err := url.Parse(v.Link.Href)
-
-				if err == nil {
-					videoUrl = strings.ReplaceAll(videoUrlTemplate, "{VIDEO-ID}", parsedUrl.Query().Get("v"))
-				} else {
-					videoUrl = "#"
-				}
+				videoUrl = "#"
 			}
 
 			list = append(list, video{
 				ThumbnailUrl: v.Group.Thumbnail.Url,
 				Title:        v.Title,
+				ID:           videoId,
 				Url:          videoUrl,
 				Author:       response.Channel,
 				AuthorUrl:    response.ChannelLink + "/videos",

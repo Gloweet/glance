@@ -34,6 +34,7 @@ var globalTemplateFunctions = template.FuncMap{
 		return intl.Sprintf("%."+strconv.Itoa(precision)+"f", price)
 	},
 	"dynamicRelativeTimeAttrs": dynamicRelativeTimeAttrs,
+	"isVideoSeen":              isVideoSeen,
 	"formatServerMegabytes": func(mb uint64) template.HTML {
 		var value string
 		var label string

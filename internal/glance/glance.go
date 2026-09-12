@@ -54,6 +54,10 @@ func newApplication(c *config) (*application, error) {
 	}
 	config := &app.Config
 
+	// Gloweet fork addition: load persisted "seen" video IDs for the Vidéos
+	// page's "Non regardées uniquement" toggle (videos_seen.go).
+	videosSeenLoad()
+
 	//
 	// Init auth
 	//
@@ -466,6 +470,7 @@ func (a *application) server() (func() error, func() error) {
 	mux.HandleFunc("GET /veille/digest/{date}", a.handleVeilleDigest)
 	mux.HandleFunc("GET /veille/data", a.handleVeilleData)
 	mux.HandleFunc("GET /veille/regenerate", a.handleVeilleRegenerate)
+	mux.HandleFunc("GET /videos/seen/{id}", a.handleVideoSeen)
 
 	if a.RequiresAuth {
 		mux.HandleFunc("GET /login", a.handleLoginPageRequest)
