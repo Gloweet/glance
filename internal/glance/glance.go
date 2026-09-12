@@ -464,6 +464,8 @@ func (a *application) server() (func() error, func() error) {
 	mux.HandleFunc("GET /veille/step/{n}", a.handleVeilleStep)
 	mux.HandleFunc("GET /veille/search", a.handleVeilleSearch)
 	mux.HandleFunc("GET /veille/digest/{date}", a.handleVeilleDigest)
+	mux.HandleFunc("GET /veille/data", a.handleVeilleData)
+	mux.HandleFunc("GET /veille/regenerate", a.handleVeilleRegenerate)
 
 	if a.RequiresAuth {
 		mux.HandleFunc("GET /login", a.handleLoginPageRequest)

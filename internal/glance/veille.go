@@ -98,6 +98,20 @@ type veilleLatest struct {
 	Entries []veilleEntry `json:"entries"`
 }
 
+type veilleConfig struct {
+	StepDays int `json:"step_days"`
+}
+
+// veilleData is what GET /veille/data returns: latest.json's entries plus
+// the current cadence, merged server-side so the custom-api widget (a
+// single-URL fetch) can render the cadence buttons' selected state and a
+// "last gen." timestamp without Glance needing to fetch two URLs itself.
+type veilleData struct {
+	StepDays  int           `json:"step_days"`
+	UpdatedAt string        `json:"updated_at"`
+	Entries   []veilleEntry `json:"entries"`
+}
+
 func veilleFetchJSON(url string, out any) error {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -347,4 +361,71 @@ func (a *application) handleVeilleDigest(w http.ResponseWriter, r *http.Request)
 	fmt.Fprintf(w, `<a class="veille-back" href="%s/feeds">&larr; Retour</a>`, a.Config.Server.BaseURL)
 	_ = veilleEntryTemplate.Execute(w, entry)
 	veillePageFoot(w)
+}
+
+// --- /veille/data ----------------------------------------------------------
+
+func (a *application) handleVeilleData(w http.ResponseWriter, r *http.Request) {
+	repo, branch := veilleRepo(), veilleBranch()
+
+	var cfg veilleConfig
+	cfg.StepDays = 1
+	_ = veilleFetchJSON(veilleRawURL(repo, branch, "digests/config.json"), &cfg)
+
+	var latest veilleLatest
+	if err := veilleFetchJSON(veilleRawURL(repo, branch, "digests/latest.json"), &latest); err != nil {
+		http.Error(w, "fetching digests: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	updatedAt := ""
+	if len(latest.Entries) > 0 {
+		updatedAt = latest.Entries[0].Date
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(veilleData{
+		StepDays:  cfg.StepDays,
+		UpdatedAt: updatedAt,
+		Entries:   latest.Entries,
+	})
+}
+
+// --- /veille/regenerate ------------------------------------------------
+
+func (a *application) handleVeilleRegenerate(w http.ResponseWriter, r *http.Request) {
+	token := os.Getenv("VEILLE_GITHUB_TOKEN")
+	if token == "" {
+		http.Error(w, "veille regenerate is not configured (VEILLE_GITHUB_TOKEN unset)", http.StatusServiceUnavailable)
+		return
+	}
+
+	repo := veilleRepo()
+	workflow := veilleEnv("VEILLE_WORKFLOW_FILE", "veille-summary.yaml")
+	branch := veilleBranch()
+
+	body, _ := json.Marshal(map[string]any{"ref": branch})
+	req, _ := http.NewRequest("POST",
+		fmt.Sprintf("https://api.github.com/repos/%s/actions/workflows/%s/dispatches", repo, workflow),
+		bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := veilleHTTPClient.Do(req)
+	if err != nil {
+		http.Error(w, "triggering regeneration: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		http.Error(w, fmt.Sprintf("triggering regeneration: status %d: %s", resp.StatusCode, string(respBody)), http.StatusBadGateway)
+		return
+	}
+
+	redirectTo := r.Header.Get("Referer")
+	if redirectTo == "" {
+		redirectTo = a.Config.Server.BaseURL + "/feeds"
+	}
+	http.Redirect(w, r, redirectTo, http.StatusFound)
 }
