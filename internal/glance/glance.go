@@ -472,6 +472,12 @@ func (a *application) server() (func() error, func() error) {
 	mux.HandleFunc("GET /veille/regenerate", a.handleVeilleRegenerate)
 	mux.HandleFunc("GET /videos/seen/{id}", a.handleVideoSeen)
 
+	// Gloweet fork addition: Google Calendar OAuth connect flow. See
+	// googlecalendar.go.
+	mux.HandleFunc("GET /settings/calendar", a.handleGoogleCalendarSettings)
+	mux.HandleFunc("GET /settings/calendar/connect", a.handleGoogleCalendarConnect)
+	mux.HandleFunc("GET /settings/calendar/callback", a.handleGoogleCalendarCallback)
+
 	if a.RequiresAuth {
 		mux.HandleFunc("GET /login", a.handleLoginPageRequest)
 		mux.HandleFunc("GET /logout", a.handleLogoutRequest)
