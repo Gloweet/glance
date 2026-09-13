@@ -477,6 +477,7 @@ func (a *application) server() (func() error, func() error) {
 	mux.HandleFunc("GET /settings/calendar", a.handleGoogleCalendarSettings)
 	mux.HandleFunc("GET /settings/calendar/connect", a.handleGoogleCalendarConnect)
 	mux.HandleFunc("GET /settings/calendar/callback", a.handleGoogleCalendarCallback)
+	mux.HandleFunc("GET /sorties/data", a.handleSortiesData)
 
 	if a.RequiresAuth {
 		mux.HandleFunc("GET /login", a.handleLoginPageRequest)

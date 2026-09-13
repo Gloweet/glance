@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -232,4 +233,124 @@ func (a *application) handleGoogleCalendarCallback(w http.ResponseWriter, r *htt
 	}
 
 	http.Redirect(w, r, settingsURL+"?status=connected", http.StatusFound)
+}
+
+// --- Calendar API calls, used by the Sorties à Strasbourg widget's -------
+// --- /sorties/data route (see sorties.go) to merge in the connected -------
+// --- account's own events. ------------------------------------------------
+
+const googleCalendarMaxEvents = 250
+
+// googleCalendarAccessToken exchanges the stored refresh token for a
+// short-lived access token. Called on every /sorties/data request rather
+// than cached - that route is itself only hit as often as the widget's
+// `cache: 1h`, so this is at most one extra round-trip per hour.
+func googleCalendarAccessToken(refreshToken string) (string, error) {
+	clientID := os.Getenv("GOOGLE_CLIENT_ID")
+	clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+	if clientID == "" || clientSecret == "" {
+		return "", fmt.Errorf("Google Calendar is not configured")
+	}
+	form := url.Values{
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+		"refresh_token": {refreshToken},
+		"grant_type":    {"refresh_token"},
+	}
+	resp, err := veilleHTTPClient.PostForm("https://oauth2.googleapis.com/token", form)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("refreshing access token: status %d: %s", resp.StatusCode, string(body))
+	}
+	var payload struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	if payload.AccessToken == "" {
+		return "", fmt.Errorf("no access token in refresh response")
+	}
+	return payload.AccessToken, nil
+}
+
+// googleCalendarProfile returns the connected account's email address - the
+// primary calendar's "id" field, which Google always sets to the account's
+// email. Avoids needing a separate userinfo/email OAuth scope just for the
+// pill label.
+func googleCalendarProfile(accessToken string) (string, error) {
+	req, _ := http.NewRequest("GET", "https://www.googleapis.com/calendar/v3/calendars/primary", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := veilleHTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetching calendar profile: status %d", resp.StatusCode)
+	}
+	var payload struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	return payload.ID, nil
+}
+
+type googleCalendarEvent struct {
+	Summary  string `json:"summary"`
+	Location string `json:"location"`
+	HTMLLink string `json:"htmlLink"`
+	Start    struct {
+		Date     string `json:"date"`     // set for all-day events
+		DateTime string `json:"dateTime"` // set for timed events
+	} `json:"start"`
+}
+
+// isoAndTime returns the event's day (YYYY-MM-DD) and, for timed events, a
+// "15:04" local time - "" for all-day events, matching the convention
+// already used by the Ticketmaster/agenda-culturel events in events.json.
+func (e googleCalendarEvent) isoAndTime(loc *time.Location) (iso string, timeStr string) {
+	if e.Start.DateTime != "" {
+		t, err := time.Parse(time.RFC3339, e.Start.DateTime)
+		if err != nil {
+			return "", ""
+		}
+		t = t.In(loc)
+		return t.Format("2006-01-02"), t.Format("15:04")
+	}
+	return e.Start.Date, ""
+}
+
+func googleCalendarListEvents(accessToken string, timeMin, timeMax time.Time) ([]googleCalendarEvent, error) {
+	q := url.Values{
+		"timeMin":      {timeMin.Format(time.RFC3339)},
+		"timeMax":      {timeMax.Format(time.RFC3339)},
+		"singleEvents": {"true"},
+		"orderBy":      {"startTime"},
+		"maxResults":   {strconv.Itoa(googleCalendarMaxEvents)},
+	}
+	req, _ := http.NewRequest("GET", "https://www.googleapis.com/calendar/v3/calendars/primary/events?"+q.Encode(), nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := veilleHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("listing events: status %d: %s", resp.StatusCode, string(body))
+	}
+	var payload struct {
+		Items []googleCalendarEvent `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Items, nil
 }
