@@ -141,6 +141,8 @@ function repositionContainer() {
     const topWhenAbove = targetBounds.top + window.scrollY - containerBounds.height;
     const topWhenBelow = targetBounds.top + window.scrollY + targetBounds.height;
 
+    let top;
+
     if (
         position === "above" && topWhenAbove > window.scrollY ||
         (position === "below" && topWhenBelow + containerBounds.height > window.scrollY + window.innerHeight)
@@ -148,13 +150,28 @@ function repositionContainer() {
         containerElement.classList.add("position-above");
         frameElement.style.removeProperty("margin-top");
         frameElement.style.marginBottom = distanceFromTarget;
-        containerElement.style.top = topWhenAbove + "px";
+        top = topWhenAbove;
     } else {
         containerElement.classList.remove("position-above");
         frameElement.style.removeProperty("margin-bottom");
         frameElement.style.marginTop = distanceFromTarget;
-        containerElement.style.top = topWhenBelow + "px";
+        top = topWhenBelow;
     }
+
+    // Flipping to the opposite side (above <-> below) only helps when that
+    // side actually has room. A tall popover (e.g. many events in one day
+    // on the Sorties à Strasbourg calendar) triggered near the top of the
+    // page can overflow *both* directions - "below" overflows the bottom so
+    // it flips to "above", but "above" then overflows the top instead,
+    // pushing part of the content to a negative, unreachable scroll
+    // position. Clamp to the visible vertical viewport as a final safety
+    // net; a global `.popover-content{max-height:60vh;overflow-y:auto}`
+    // rule (see the Sorties à Strasbourg widget in gitops-demo config.yaml)
+    // already keeps containerBounds.height comfortably under the viewport
+    // height, so there's always a valid position in this range.
+    const minTop = window.scrollY;
+    const maxTop = window.scrollY + window.innerHeight - containerBounds.height;
+    containerElement.style.top = Math.min(Math.max(top, minTop), Math.max(minTop, maxTop)) + "px";
 }
 
 function hidePopover() {
