@@ -95,6 +95,23 @@ function updateRelativeTimeForElements(elements)
     }
 }
 
+function setupDynamicLocalTime() {
+    const elements = document.querySelectorAll("[data-dynamic-local-time]");
+
+    for (let i = 0; i < elements.length; i++) {
+        const element = elements[i];
+        const timestamp = element.dataset.dynamicLocalTime;
+
+        if (timestamp === undefined)
+            continue
+
+        const date = new Date(parseInt(timestamp, 10) * 1000);
+        const hours = String(date.getHours()).padStart(2, "0");
+        const minutes = String(date.getMinutes()).padStart(2, "0");
+        element.textContent = `${hours}:${minutes}`;
+    }
+}
+
 function setupSearchBoxes() {
     const searchWidgets = document.getElementsByClassName("search");
 
@@ -765,6 +782,7 @@ async function setupPage() {
         setupGroups();
         setupMasonries();
         setupDynamicRelativeTime();
+        setupDynamicLocalTime();
         setupLazyImages();
     } finally {
         pageElement.classList.add("content-ready");

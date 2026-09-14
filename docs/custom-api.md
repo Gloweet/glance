@@ -428,6 +428,7 @@ The following helper functions provided by Glance are available:
 - `toFloat(i int) float`: Converts an integer to a float.
 - `toInt(f float) int`: Converts a float to an integer.
 - `toRelativeTime(t time.Time) template.HTMLAttr`: Converts Time to a relative time such as 2h, 1d, etc which dynamically updates. **NOTE:** the value of this function should be used as an attribute in an HTML tag, e.g. `<span {{ toRelativeTime .Time }}></span>`.
+- `toLocalTime(t time.Time) template.HTMLAttr`: Converts Time to the browser's local `HH:MM`, rendered client-side. Like `toRelativeTime`, the value must be used as an attribute in an HTML tag, e.g. `<span {{ toLocalTime .Time }}></span>`.
 - `now() time.Time`: Returns the current time.
 - `offsetNow(offset string) time.Time`: Returns the current time with an offset. The offset can be positive or negative and must be in the format "3h" "-1h" or "2h30m10s".
 - `duration(str string) time.Duration`: Parses a string such as `1h`, `24h`, `5h30m`, etc into a `time.Duration`.

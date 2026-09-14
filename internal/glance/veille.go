@@ -13,10 +13,19 @@ package glance
 // (e.g. an Authentik forward-auth Traefik middleware in front of the whole
 // host) — no auth code here.
 //
-// Digest storage: PheonBest/blogs, digests/ (public repo, read
-// unauthenticated via raw.githubusercontent.com). Writing (the cadence
-// control) needs a token with Contents:write on that repo, from
-// VEILLE_GITHUB_TOKEN.
+// Digest storage: PheonBest/blogs, digests/ (public repo). Entries are read
+// unauthenticated via raw.githubusercontent.com; config.json (the cadence) is
+// read via the Contents API when VEILLE_GITHUB_TOKEN is set, because raw is
+// CDN-cached and would keep serving the old cadence for minutes after a
+// change. Writing (cadence control, regeneration dispatch) needs a token with
+// Contents:write and Actions:write on that repo, from VEILLE_GITHUB_TOKEN.
+// The Actions API is also queried to expose an in-progress generation run as
+// "generating_since" in /veille/data.
+//
+// /veille/step and /veille/regenerate additionally force any custom-api
+// widget fed by /veille/data to refresh on the next page content fetch, so
+// the change is visible right after the redirect back instead of whenever
+// the widget's cache would have expired.
 
 import (
 	"bytes"
@@ -29,6 +38,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -106,11 +116,16 @@ type veilleConfig struct {
 // the current cadence, merged server-side so the custom-api widget (a
 // single-URL fetch) can render the cadence buttons' selected state and a
 // "last gen." timestamp without Glance needing to fetch two URLs itself.
+// GeneratingSince ("2006-01-02T15:04:05Z", empty when idle) lets the widget
+// show a "generation in progress" state instead of the stale last-gen date.
 type veilleData struct {
-	StepDays  int           `json:"step_days"`
-	UpdatedAt string        `json:"updated_at"`
-	Entries   []veilleEntry `json:"entries"`
+	StepDays        int           `json:"step_days"`
+	UpdatedAt       string        `json:"updated_at"`
+	Entries         []veilleEntry `json:"entries"`
+	GeneratingSince string        `json:"generating_since,omitempty"`
 }
+
+const veilleTimeLayout = "2006-01-02T15:04:05Z"
 
 func veilleFetchJSON(url string, out any) error {
 	req, err := http.NewRequest("GET", url, nil)
@@ -126,6 +141,180 @@ func veilleFetchJSON(url string, out any) error {
 		return fmt.Errorf("unexpected status %d for %s", resp.StatusCode, url)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func veilleFetchGitHubAPI(url, token string, out any) error {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := veilleHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status %d for %s", resp.StatusCode, url)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// veilleFetchConfig reads digests/config.json. Freshness matters right after
+// a cadence change: raw.githubusercontent.com is CDN-cached and can lag the
+// Contents API write by minutes, so when a token is available the config is
+// read through the API (never stale), falling back to raw otherwise.
+func veilleFetchConfig(repo, branch, path string) (veilleConfig, error) {
+	cfg := veilleConfig{StepDays: 1}
+
+	token := os.Getenv("VEILLE_GITHUB_TOKEN")
+	if token == "" {
+		err := veilleFetchJSON(veilleRawURL(repo, branch, path), &cfg)
+		return cfg, err
+	}
+
+	var file struct {
+		Content string `json:"content"`
+	}
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/%s?ref=%s", repo, path, branch)
+	if err := veilleFetchGitHubAPI(apiURL, token, &file); err != nil {
+		return cfg, err
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(file.Content, "\n", ""))
+	if err != nil {
+		return cfg, err
+	}
+	if err := json.Unmarshal(decoded, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// veilleActiveRunSince reports when the currently active (queued or running)
+// workflow run started. ok is false when the API couldn't be queried (no
+// token, insufficient permissions, network) — callers then fall back to the
+// in-memory trigger record.
+func veilleActiveRunSince(repo, workflow, branch string) (since time.Time, ok bool) {
+	token := os.Getenv("VEILLE_GITHUB_TOKEN")
+	if token == "" {
+		return time.Time{}, false
+	}
+
+	var runs struct {
+		WorkflowRuns []struct {
+			Status       string    `json:"status"`
+			CreatedAt    time.Time `json:"created_at"`
+			RunStartedAt time.Time `json:"run_started_at"`
+		} `json:"workflow_runs"`
+	}
+	url := fmt.Sprintf("https://api.github.com/repos/%s/actions/workflows/%s/runs?branch=%s&per_page=5", repo, workflow, branch)
+	if err := veilleFetchGitHubAPI(url, token, &runs); err != nil {
+		return time.Time{}, false
+	}
+
+	// Runs come back newest first; anything not "completed" is still active
+	// (queued, in_progress, waiting, ...).
+	for _, run := range runs.WorkflowRuns {
+		if run.Status == "completed" {
+			continue
+		}
+		if !run.RunStartedAt.IsZero() {
+			return run.RunStartedAt, true
+		}
+		return run.CreatedAt, true
+	}
+	return time.Time{}, true
+}
+
+// In-memory record of the last successful manual regeneration. Bridges the
+// few seconds between a workflow_dispatch and the run showing up in the
+// Actions API, and acts as a fallback when the API isn't readable.
+var veilleRegenMu sync.Mutex
+var veilleRegenTriggeredAt time.Time
+
+func veilleNoteRegenTriggered() {
+	veilleRegenMu.Lock()
+	veilleRegenTriggeredAt = time.Now()
+	veilleRegenMu.Unlock()
+}
+
+func veilleRegenTriggeredWithin(d time.Duration) (time.Time, bool) {
+	veilleRegenMu.Lock()
+	defer veilleRegenMu.Unlock()
+	if veilleRegenTriggeredAt.IsZero() || time.Since(veilleRegenTriggeredAt) > d {
+		return time.Time{}, false
+	}
+	return veilleRegenTriggeredAt, true
+}
+
+// veilleGeneratingSince reports when the current digest generation started,
+// "" when idle. The Actions API is authoritative once the dispatched run is
+// visible; the in-memory record only covers the dispatch→API lag (a run that
+// already finished must not keep showing as generating) or a total API
+// outage.
+func veilleGeneratingSince(repo, branch string) string {
+	workflow := veilleEnv("VEILLE_WORKFLOW_FILE", "veille-summary.yaml")
+
+	since, apiOK := veilleActiveRunSince(repo, workflow, branch)
+	if apiOK {
+		if !since.IsZero() {
+			return since.UTC().Format(veilleTimeLayout)
+		}
+		if triggeredAt, ok := veilleRegenTriggeredWithin(2 * time.Minute); ok {
+			return triggeredAt.UTC().Format(veilleTimeLayout)
+		}
+		return ""
+	}
+	if triggeredAt, ok := veilleRegenTriggeredWithin(15 * time.Minute); ok {
+		return triggeredAt.UTC().Format(veilleTimeLayout)
+	}
+	return ""
+}
+
+// veilleInvalidateDataWidgets forces every custom-api widget fed by
+// /veille/data to refresh on the next page content fetch, so a cadence change
+// or a manual regeneration shows up right after the redirect back instead of
+// whenever the widget's cache would have expired.
+func (a *application) veilleInvalidateDataWidgets() {
+	for _, p := range a.slugToPage {
+		p.mu.Lock()
+		for _, w := range p.HeadWidgets {
+			veilleMarkDataWidgetStale(w)
+		}
+		for c := range p.Columns {
+			for _, w := range p.Columns[c].Widgets {
+				veilleMarkDataWidgetStale(w)
+			}
+		}
+		p.mu.Unlock()
+	}
+}
+
+func veilleMarkDataWidgetStale(w widget) {
+	switch v := w.(type) {
+	case *groupWidget:
+		for _, nested := range v.Widgets {
+			veilleMarkDataWidgetStale(nested)
+		}
+		return
+	case *splitColumnWidget:
+		for _, nested := range v.Widgets {
+			veilleMarkDataWidgetStale(nested)
+		}
+		return
+	}
+
+	cw, ok := w.(*customAPIWidget)
+	if !ok || cw.CustomAPIRequest == nil {
+		return
+	}
+	url := strings.SplitN(cw.URL, "?", 2)[0]
+	if !strings.HasSuffix(url, "/veille/data") {
+		return
+	}
+	cw.nextUpdate = time.Now().Add(-time.Second)
 }
 
 // --- shared page chrome ------------------------------------------------
@@ -236,6 +425,8 @@ func (a *application) handleVeilleStep(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("updating config: status %d: %s", putResp.StatusCode, string(body)), http.StatusBadGateway)
 		return
 	}
+
+	a.veilleInvalidateDataWidgets()
 
 	redirectTo := r.Header.Get("Referer")
 	if redirectTo == "" {
@@ -368,9 +559,7 @@ func (a *application) handleVeilleDigest(w http.ResponseWriter, r *http.Request)
 func (a *application) handleVeilleData(w http.ResponseWriter, r *http.Request) {
 	repo, branch := veilleRepo(), veilleBranch()
 
-	var cfg veilleConfig
-	cfg.StepDays = 1
-	_ = veilleFetchJSON(veilleRawURL(repo, branch, "digests/config.json"), &cfg)
+	cfg, _ := veilleFetchConfig(repo, branch, veilleEnv("VEILLE_CONFIG_PATH", veilleDefaultConfigPath))
 
 	var latest veilleLatest
 	if err := veilleFetchJSON(veilleRawURL(repo, branch, "digests/latest.json"), &latest); err != nil {
@@ -385,9 +574,10 @@ func (a *application) handleVeilleData(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(veilleData{
-		StepDays:  cfg.StepDays,
-		UpdatedAt: updatedAt,
-		Entries:   latest.Entries,
+		StepDays:        cfg.StepDays,
+		UpdatedAt:       updatedAt,
+		Entries:         latest.Entries,
+		GeneratingSince: veilleGeneratingSince(repo, branch),
 	})
 }
 
@@ -422,6 +612,9 @@ func (a *application) handleVeilleRegenerate(w http.ResponseWriter, r *http.Requ
 		http.Error(w, fmt.Sprintf("triggering regeneration: status %d: %s", resp.StatusCode, string(respBody)), http.StatusBadGateway)
 		return
 	}
+
+	veilleNoteRegenTriggered()
+	a.veilleInvalidateDataWidgets()
 
 	redirectTo := r.Header.Get("Referer")
 	if redirectTo == "" {

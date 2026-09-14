@@ -90,3 +90,7 @@ func formatApproxNumber(count int) string {
 func dynamicRelativeTimeAttrs(t interface{ Unix() int64 }) template.HTMLAttr {
 	return template.HTMLAttr(`data-dynamic-relative-time="` + strconv.FormatInt(t.Unix(), 10) + `"`)
 }
+
+func dynamicLocalTimeAttrs(t interface{ Unix() int64 }) template.HTMLAttr {
+	return template.HTMLAttr(`data-dynamic-local-time="` + strconv.FormatInt(t.Unix(), 10) + `"`)
+}

@@ -533,6 +533,7 @@ var customAPITemplateFuncs = func() template.FuncMap {
 			return customAPIFuncParseTimeInLocation(layout, value, time.Local)
 		},
 		"toRelativeTime": dynamicRelativeTimeAttrs,
+		"toLocalTime":    dynamicLocalTimeAttrs,
 		"parseRelativeTime": func(layout, value string) template.HTMLAttr {
 			// Shorthand to do both of the above with a single function call
 			return dynamicRelativeTimeAttrs(customAPIFuncParseTimeInLocation(layout, value, time.UTC))
