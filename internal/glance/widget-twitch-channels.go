@@ -119,9 +119,16 @@ type twitchStreamMetadataOperationResponse struct {
 	} `json:"user"`
 }
 
+// Twitch periodically invalidates persisted-query hashes; the StreamMetadata
+// one below started returning {"errors":[{"message":"PersistedQueryNotFound"}]}
+// for every channel (confirmed via manual gql.twitch.tv calls - ChannelShell's
+// hash was still fine, only this one had gone stale). Replaced with the hash
+// + variables currently used by streamlink (actively maintained, breaks
+// loudly and gets fixed fast when Twitch rotates these):
+// https://github.com/streamlink/streamlink/blob/master/src/streamlink/plugins/twitch.py
 const twitchChannelStatusOperationRequestBody = `[
 {"operationName":"ChannelShell","variables":{"login":"%s"},"extensions":{"persistedQuery":{"version":1,"sha256Hash":"580ab410bcd0c1ad194224957ae2241e5d252b2c5173d8e0cce9d32d5bb14efe"}}},
-{"operationName":"StreamMetadata","variables":{"channelLogin":"%s"},"extensions":{"persistedQuery":{"version":1,"sha256Hash":"676ee2f834ede42eb4514cdb432b3134fefc12590080c9a2c9bb44a2a4a63266"}}}
+{"operationName":"StreamMetadata","variables":{"channelLogin":"%s","includeIsDJ":true},"extensions":{"persistedQuery":{"version":1,"sha256Hash":"b57f9b910f8cd1a4659d894fe7550ccc81ec9052c01e438b290fd66a040b9b93"}}}
 ]`
 
 // TODO: rework
